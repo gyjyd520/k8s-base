@@ -102,6 +102,7 @@ metadata:
   name: kuboard-v3
   namespace: kuboard
 spec:
+  type: NodePort
   ports:
     - name: web
       nodePort: 30080
@@ -114,10 +115,9 @@ spec:
       protocol: TCP
       targetPort: 10081
     - name: udp
-      nodePort: 30081
+      nodePort: 30082
       port: 10081
       protocol: UDP
       targetPort: 10081
   selector:
     k8s.kuboard.cn/name: kuboard-v3
-  type: LoadBalancer
