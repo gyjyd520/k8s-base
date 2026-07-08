@@ -112,9 +112,9 @@ spec:
         - name: SMTP_ENABLED
           value: "false"
         - name: SMTP_DOMAIN
-          value: www.magedu.com
+          value: www.gongyongjun.com
         - name: SMTP_HOST
-          value: smtp.magedu.com
+          value: smtp.gongyongjun.com
         - name: SMTP_PORT
           value: "587"
         - name: SMTP_USER
@@ -136,7 +136,7 @@ spec:
         - name: IMAP_ENABLED
           value: "false"
         - name: IMAP_HOST
-          value: imap.magedu.com
+          value: imap.gongyongjun.com
         - name: IMAP_PORT
           value: "993"
         - name: IMAP_USER
@@ -202,7 +202,7 @@ metadata:
 spec:
   ingressClassName: 'nginx'
   rules:
-  - host: gitlab.magedu.com
+  - host: gitlab.gongyongjun.com
     http:
       paths:
       - path: /
