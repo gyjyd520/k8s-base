@@ -1,0 +1,262 @@
+---
+# 命名空间
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kuboard
+  labels:
+    app.kubernetes.io/name: kuboard
+    app.kubernetes.io/component: control-plane
+
+---
+# 服务账户
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kuboard-bootstrap
+  namespace: kuboard
+  labels:
+    app.kubernetes.io/name: kuboard
+    app.kubernetes.io/component: rbac
+
+---
+# 集群角色绑定（授予管理权限）
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kuboard-bootstrap-crb
+  labels:
+    app.kubernetes.io/name: kuboard
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin
+subjects:
+- kind: ServiceAccount
+  name: kuboard-bootstrap
+  namespace: kuboard
+
+---
+# ConfigMap - 集中管理配置
+# ⚠️ 重要：这个部分在原始YAML中完全缺失
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kuboard-v3-config
+  namespace: kuboard
+  labels:
+    app.kubernetes.io/name: kuboard
+    app.kubernetes.io/component: configuration
+data:
+  # 【关键】Agent 通信配置
+  KUBOARD_ENDPOINT: "http://kuboard-v3:80"                    # Agent 连接地址
+  KUBOARD_AGENT_KEY: "32b7d6572c6255211b4eec9009e4a816"      # Agent 认证密钥（⚠️ 必须修改）
+  KUBOARD_AGENT_SERVER_TCP_PORT: "10081"                      # Agent TCP 端口
+  KUBOARD_AGENT_SERVER_UDP_PORT: "10081"                      # Agent UDP 端口
+  
+  # 【日志和调试】
+  KUBOARD_SERVER_LOGRUS_LEVEL: "info"                         # 日志级别（debug/info/warn/error）
+  
+  # 【数据库相关】
+  # 注意：临时部署模式使用内存/临时存储，生产环境应使用外部数据库
+
+---
+# 部署 - Kuboard v3 主服务
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kuboard-v3
+  namespace: kuboard
+  labels:
+    app.kubernetes.io/name: kuboard
+    app.kubernetes.io/component: server
+    app.kubernetes.io/version: "v3"
+    k8s.kuboard.cn/name: kuboard-v3
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kuboard
+      app.kubernetes.io/component: server
+      k8s.kuboard.cn/name: kuboard-v3
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kuboard
+        app.kubernetes.io/component: server
+        app.kubernetes.io/version: "v3"
+        k8s.kuboard.cn/name: kuboard-v3
+      annotations:
+        description: "Kuboard v3 control plane"
+    spec:
+      # 【安全上下文】
+      securityContext:
+        runAsNonRoot: false
+        runAsUser: 0
+        fsGroup: 0
+      
+      serviceAccount: kuboard-bootstrap
+      serviceAccountName: kuboard-bootstrap
+      dnsPolicy: ClusterFirst
+      restartPolicy: Always
+      terminationGracePeriodSeconds: 30
+
+      containers:
+      - name: kuboard
+        # ✅ 改进：指定具体的镜像版本
+        image: eipwork/kuboard:v3.4.0
+        imagePullPolicy: IfNotPresent
+        
+        # 【环境变量】- 从 ConfigMap 注入而不是硬编码
+        envFrom:
+        - configMapRef:
+            name: kuboard-v3-config
+        
+        # 【端口定义】
+        ports:
+        - name: web
+          containerPort: 80
+          protocol: TCP
+        - name: https
+          containerPort: 443
+          protocol: TCP
+        - name: agent-tcp
+          containerPort: 10081
+          protocol: TCP
+        - name: agent-udp
+          containerPort: 10081
+          protocol: UDP
+        
+        # 【健康检查】- liveness probe
+        livenessProbe:
+          httpGet:
+            path: /
+            port: web
+            scheme: HTTP
+          initialDelaySeconds: 45
+          periodSeconds: 10
+          timeoutSeconds: 5
+          successThreshold: 1
+          failureThreshold: 3
+        
+        # 【健康检查】- readiness probe
+        readinessProbe:
+          httpGet:
+            path: /
+            port: web
+            scheme: HTTP
+          initialDelaySeconds: 30
+          periodSeconds: 5
+          timeoutSeconds: 3
+          successThreshold: 1
+          failureThreshold: 3
+        
+        # 【资源限制】- 生产环境应根据实际情况调整
+        resources:
+          requests:
+            cpu: 200m
+            memory: 256Mi
+          limits:
+            cpu: 1000m
+            memory: 1Gi
+        
+        # 【安全上下文】
+        securityContext:
+          allowPrivilegeEscalation: false
+          privileged: false
+          readOnlyRootFilesystem: false
+          capabilities:
+            drop:
+            - ALL
+        
+        # 【挂载卷】
+        volumeMounts:
+        - name: kuboard-data
+          mountPath: /data
+          readOnly: false
+      
+      # 【卷定义】
+      # ⚠️ 原始YAML使用 emptyDir（临时存储）- 这是主要问题！
+      # 生产环境应使用 PVC，临时环境可保持 emptyDir
+      volumes:
+      - name: kuboard-data
+        emptyDir:
+          sizeLimit: 10Gi  # ✅ 改进：添加大小限制
+          # 注意：生产环境应改为：
+          # persistentVolumeClaim:
+          #   claimName: kuboard-data-pvc
+
+---
+# 服务 - 暴露 Kuboard UI 和 Agent 端口
+apiVersion: v1
+kind: Service
+metadata:
+  name: kuboard-v3
+  namespace: kuboard
+  labels:
+    app.kubernetes.io/name: kuboard
+    app.kubernetes.io/component: server
+    k8s.kuboard.cn/name: kuboard-v3
+  annotations:
+    description: "Kuboard v3 service for UI and Agent communication"
+spec:
+  type: NodePort
+  selector:
+    app.kubernetes.io/name: kuboard
+    app.kubernetes.io/component: server
+  
+  ports:
+  # Web UI 端口
+  - name: web
+    port: 80
+    targetPort: web
+    protocol: TCP
+    nodePort: 30080
+  
+  # HTTPS 端口（如果需要）
+  - name: https
+    port: 443
+    targetPort: https
+    protocol: TCP
+    nodePort: 30443
+  
+  # Agent TCP 连接端口
+  - name: agent-tcp
+    port: 10081
+    targetPort: agent-tcp
+    protocol: TCP
+    nodePort: 30081
+  
+  # Agent UDP 心跳端口
+  - name: agent-udp
+    port: 10081
+    targetPort: agent-udp
+    protocol: UDP
+    nodePort: 30082
+
+---
+# PodDisruptionBudget - 保证高可用性
+# 虽然当前只有 1 个副本，但这是最佳实践
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: kuboard-v3-pdb
+  namespace: kuboard
+  labels:
+    app.kubernetes.io/name: kuboard
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kuboard
+      app.kubernetes.io/component: server
+
+---
+# ⚠️ 注意：此配置缺少 etcd 集群部分
+# 这是"临时/单机部署"模式。对于生产环境，应部署 etcd StatefulSet
+# 参考：Kuboard/kuboard-persistent/kuboard-v3.yaml 中的 etcd 部署配置
