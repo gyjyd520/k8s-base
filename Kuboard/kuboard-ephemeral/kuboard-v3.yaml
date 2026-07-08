@@ -1,123 +1,230 @@
 ---
+# 命名空间
 apiVersion: v1
 kind: Namespace
 metadata:
   name: kuboard
+  labels:
+    app.kubernetes.io/name: kuboard
+    app.kubernetes.io/component: control-plane
+
 ---
+# 服务账户
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: kuboard-boostrap
+  name: kuboard-bootstrap
   namespace: kuboard
+  labels:
+    app.kubernetes.io/name: kuboard
+    app.kubernetes.io/component: rbac
+
 ---
+# 集群角色绑定
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: kuboard-boostrap-crb
+  name: kuboard-bootstrap-crb
+  labels:
+    app.kubernetes.io/name: kuboard
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
   name: cluster-admin
 subjects:
 - kind: ServiceAccount
-  name: kuboard-boostrap
+  name: kuboard-bootstrap
   namespace: kuboard
+
 ---
+# ConfigMap - 集中管理配置
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kuboard-v3-config
+  namespace: kuboard
+  labels:
+    app.kubernetes.io/name: kuboard
+    app.kubernetes.io/component: configuration
+data:
+  # Agent 通信配置
+  KUBOARD_ENDPOINT: "http://kuboard-v3:80"
+  KUBOARD_AGENT_SERVER_TCP_PORT: "10081"
+  KUBOARD_AGENT_SERVER_UDP_PORT: "10081"
+  KUBOARD_AGENT_KEY: "32b7d6572c6255211b4eec9009e4a816"
+  # 日志级别
+  KUBOARD_SERVER_LOGRUS_LEVEL: "info"
+
+---
+# 部署 - Kuboard v3
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  labels:
-    k8s.kuboard.cn/name: kuboard-v3
   name: kuboard-v3
   namespace: kuboard
+  labels:
+    app.kubernetes.io/name: kuboard
+    app.kubernetes.io/component: server
+    app.kubernetes.io/version: "v3"
+    k8s.kuboard.cn/name: kuboard-v3
 spec:
   replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
   selector:
     matchLabels:
+      app.kubernetes.io/name: kuboard
+      app.kubernetes.io/component: server
       k8s.kuboard.cn/name: kuboard-v3
   template:
     metadata:
       labels:
+        app.kubernetes.io/name: kuboard
+        app.kubernetes.io/component: server
         k8s.kuboard.cn/name: kuboard-v3
     spec:
-      containers:
-        - env:
-            - name: "KUBOARD_ENDPOINT"
-              value: "http://kuboard-v3:80"
-            - name: "KUBOARD_AGENT_SERVER_TCP_PORT"
-              value: "10081"
-          image: eipwork/kuboard:v3 
-          volumeMounts:
-          - name: kuboard-data 
-            mountPath: /data 
-            readOnly: false
-          imagePullPolicy: Always
-          livenessProbe:
-            failureThreshold: 3
-            httpGet:
-              path: /
-              port: 80
-              scheme: HTTP
-            initialDelaySeconds: 30
-            periodSeconds: 10
-            successThreshold: 1
-            timeoutSeconds: 1
-          name: kuboard
-          ports:
-            - containerPort: 80
-              name: web
-              protocol: TCP
-            - containerPort: 443
-              name: https
-              protocol: TCP
-            - containerPort: 10081
-              name: peer
-              protocol: TCP
-            - containerPort: 10081
-              name: peer-u
-              protocol: UDP
-          readinessProbe:
-            failureThreshold: 3
-            httpGet:
-              path: /
-              port: 80
-              scheme: HTTP
-            initialDelaySeconds: 30
-            periodSeconds: 10
-            successThreshold: 1
-            timeoutSeconds: 1
-      volumes:
-      - name: kuboard-data
-        emptyDir: {}
+      serviceAccount: kuboard-bootstrap
+      serviceAccountName: kuboard-bootstrap
       dnsPolicy: ClusterFirst
       restartPolicy: Always
-      serviceAccount: kuboard-boostrap
-      serviceAccountName: kuboard-boostrap
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        fsGroup: 0
+
+      containers:
+      - name: kuboard
+        image: eipwork/kuboard:v3.4.0
+        imagePullPolicy: IfNotPresent
+        
+        # 环境变量 - 从 ConfigMap 注入
+        envFrom:
+        - configMapRef:
+            name: kuboard-v3-config
+        
+        # 端口定义
+        ports:
+        - name: web
+          containerPort: 80
+          protocol: TCP
+        - name: https
+          containerPort: 443
+          protocol: TCP
+        - name: agent-tcp
+          containerPort: 10081
+          protocol: TCP
+        - name: agent-udp
+          containerPort: 10081
+          protocol: UDP
+        
+        # Liveness 探针
+        livenessProbe:
+          httpGet:
+            path: /
+            port: web
+            scheme: HTTP
+          initialDelaySeconds: 45
+          periodSeconds: 10
+          timeoutSeconds: 5
+          successThreshold: 1
+          failureThreshold: 3
+        
+        # Readiness 探针
+        readinessProbe:
+          httpGet:
+            path: /
+            port: web
+            scheme: HTTP
+          initialDelaySeconds: 30
+          periodSeconds: 5
+          timeoutSeconds: 3
+          successThreshold: 1
+          failureThreshold: 3
+        
+        # 资源限制
+        resources:
+          requests:
+            cpu: 200m
+            memory: 256Mi
+          limits:
+            cpu: 1000m
+            memory: 1Gi
+        
+        # 安全上下文
+        securityContext:
+          allowPrivilegeEscalation: false
+          privileged: false
+          readOnlyRootFilesystem: false
+          capabilities:
+            drop:
+            - ALL
+        
+        # 卷挂载
+        volumeMounts:
+        - name: kuboard-data
+          mountPath: /data
+          readOnly: false
+      
+      # 卷定义
+      volumes:
+      - name: kuboard-data
+        emptyDir:
+          sizeLimit: 10Gi
+
 ---
+# 服务
 apiVersion: v1
 kind: Service
 metadata:
-  labels:
-    k8s.kuboard.cn/name: kuboard-v3
   name: kuboard-v3
   namespace: kuboard
+  labels:
+    app.kubernetes.io/name: kuboard
+    app.kubernetes.io/component: server
+    k8s.kuboard.cn/name: kuboard-v3
 spec:
   type: NodePort
-  ports:
-    - name: web
-      nodePort: 30080
-      port: 80
-      protocol: TCP
-      targetPort: 80
-    - name: tcp
-      nodePort: 30081
-      port: 10081
-      protocol: TCP
-      targetPort: 10081
-    - name: udp
-      nodePort: 30082
-      port: 10081
-      protocol: UDP
-      targetPort: 10081
   selector:
-    k8s.kuboard.cn/name: kuboard-v3
+    app.kubernetes.io/name: kuboard
+    app.kubernetes.io/component: server
+  
+  ports:
+  - name: web
+    nodePort: 30080
+    port: 80
+    protocol: TCP
+    targetPort: web
+  
+  - name: https
+    nodePort: 30443
+    port: 443
+    protocol: TCP
+    targetPort: https
+  
+  - name: agent-tcp
+    nodePort: 30081
+    port: 10081
+    protocol: TCP
+    targetPort: agent-tcp
+  
+  - name: agent-udp
+    nodePort: 30082
+    port: 10081
+    protocol: UDP
+    targetPort: agent-udp
+
+---
+# PodDisruptionBudget - 最小可用性保证
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: kuboard-v3-pdb
+  namespace: kuboard
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kuboard
+      app.kubernetes.io/component: server
