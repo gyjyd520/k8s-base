@@ -192,10 +192,10 @@ spec:
           volumeMounts:
             - mountPath: "/data"
               name: kuboard-data
-       volumes:
-      - name: kuboard-data
-        persistentVolumeClaim:
-          claimName: kuboard-data-pvc
+      volumes:
+        - name: kuboard-data
+          persistentVolumeClaim:
+            claimName: kuboard-data-pvc
 
 ---
 apiVersion: v1
@@ -216,16 +216,15 @@ spec:
       targetPort: 80
     - name: agentservertcp
       nodePort: 30081
-      port: 10081
+      port: 30081
       protocol: TCP
-      targetPort: 10081
+      targetPort: 30081
     - name: agentserverudp
-      nodePort: 30081
-      port: 10081
+      nodePort: 30082
+      port: 30081
       protocol: UDP
-      targetPort: 10081
+      targetPort: 30081
   selector:
     k8s.kuboard.cn/name: kuboard-v3
   sessionAffinity: None
   type: NodePort
-  
