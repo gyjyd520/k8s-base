@@ -93,15 +93,25 @@ spec:
           - /bin/sh
           - -c
           - |
+            # 定义etcd集群的所有节点及其通信地址（peer端口2380）
             PEERS="kuboard-etcd-0=http://kuboard-etcd-0.kuboard-etcd:2380,kuboard-etcd-1=http://kuboard-etcd-1.kuboard-etcd:2380,kuboard-etcd-2=http://kuboard-etcd-2.kuboard-etcd:2380"
+            # 启动etcd服务
             exec etcd --name ${HOSTNAME} \
+              # 设置节点间通信地址（监听所有网卡的2380端口）
               --listen-peer-urls http://0.0.0.0:2380 \
+              # 设置客户端通信地址（监听所有网卡的2379端口）
               --listen-client-urls http://0.0.0.0:2379 \
+              # 设置对客户端通告的地址（使用Service DNS名称确保可访问性）
               --advertise-client-urls http://${HOSTNAME}.kuboard-etcd:2379 \
+              # 设置对集群内其他节点通告的地址（节点间通信）
               --initial-advertise-peer-urls http://${HOSTNAME}:2380 \
+              # 设置初始集群的token（用于区分不同的etcd集群）
               --initial-cluster-token kuboard-etcd-cluster-1 \
+              # 指定集群中所有成员的名称和地址
               --initial-cluster ${PEERS} \
+              # 设置初始化状态为new（新建集群模式，后续重启需改为existing）
               --initial-cluster-state new \
+              # 指定etcd数据存储目录
               --data-dir /data/kuboard.etcd
   volumeClaimTemplates:
   - metadata:
@@ -182,7 +192,7 @@ spec:
           volumeMounts:
             - mountPath: "/data"
               name: kuboard-data
-      volumes:
+       volumes:
       - name: kuboard-data
         persistentVolumeClaim:
           claimName: kuboard-data-pvc
