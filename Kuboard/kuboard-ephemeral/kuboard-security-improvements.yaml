@@ -1,0 +1,195 @@
+---
+# Kuboard 安全与部署改进清单
+# 文件: Kuboard/kuboard-ephemeral/kuboard-security-improvements.yaml
+# 说明: 包含将 Agent 密钥移入 Secret、示例最小 ClusterRole、以及将 Service 改为 ClusterIP 的建议资源。
+# 在应用前请在测试环境验证并根据需求调整权限与策略。
+
+# 1) 推荐：把 Agent 密钥放到 Secret 中（不要把密钥放在 ConfigMap）
+apiVersion: v1
+kind: Secret
+metadata:
+  name: kuboard-agent-secret
+  namespace: kuboard
+  labels:
+    app.kubernetes.io/name: kuboard
+    app.kubernetes.io/component: security
+type: Opaque
+stringData:
+  # 请替换为强随机密钥或使用下面的命令生成并创建 Secret（推荐在 CI/Secret Manager 中管理）
+  # 生成命令（在带 openssl 的环境）:
+  #   openssl rand -hex 16
+  # 或直接用 kubectl 创建（示例）:
+  #   kubectl create secret generic kuboard-agent-secret --from-literal=KUBOARD_AGENT_KEY=$(openssl rand -hex 16) -n kuboard
+  KUBOARD_AGENT_KEY: "REPLACE_WITH_SECURE_RANDOM_KEY"
+
+---
+# 2) 建议：最小化 ClusterRole 权限（示例，请根据 Kuboard 功能再收紧或扩展）
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kuboard-limited
+  labels:
+    app.kubernetes.io/name: kuboard
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "services", "endpoints", "configmaps", "secrets", "namespaces"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets", "daemonsets", "replicasets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses", "networkpolicies"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["policy"]
+    resources: ["poddisruptionbudgets"]
+    verbs: ["get", "list", "watch"]
+
+---
+# 3) 建议：将 ServiceAccount 绑定到最小权限 ClusterRole（改名，避免与现有同名 CRB 冲突）
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kuboard-bootstrap-limited-crb
+  labels:
+    app.kubernetes.io/name: kuboard
+subjects:
+  - kind: ServiceAccount
+    name: kuboard-bootstrap
+    namespace: kuboard
+roleRef:
+  kind: ClusterRole
+  name: kuboard-limited
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# 4) 建议：将 Service 改为 ClusterIP（更安全）并通过 Ingress 暴露 Web UI。
+# 下面提供一个示例 Service（ClusterIP），用于替换原有 NodePort 类型的 Service。
+apiVersion: v1
+kind: Service
+metadata:
+  name: kuboard-v3
+  namespace: kuboard
+  labels:
+    app.kubernetes.io/name: kuboard
+    app.kubernetes.io/component: server
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: kuboard
+    app.kubernetes.io/component: server
+  ports:
+    - name: web
+      port: 80
+      targetPort: web
+      protocol: TCP
+    - name: https
+      port: 443
+      targetPort: https
+      protocol: TCP
+    - name: agent-tcp
+      port: 10081
+      targetPort: agent-tcp
+      protocol: TCP
+    - name: agent-udp
+      port: 10081
+      targetPort: agent-udp
+      protocol: UDP
+
+---
+# 5) 建议 Deployment 的最小变更示例：从 Secret 引入 Agent 密钥并尽量使用非 root 用户。
+# 注意：此示例会替换或与现有 Deployment 同名覆盖（在 kubectl apply 时会尝试更新），
+# 在生产前请先在测试环境验证应用是否可以在非 root 用户下运行。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kuboard-v3
+  namespace: kuboard
+  labels:
+    app.kubernetes.io/name: kuboard
+    app.kubernetes.io/component: server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kuboard
+      app.kubernetes.io/component: server
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kuboard
+        app.kubernetes.io/component: server
+    spec:
+      serviceAccountName: kuboard-bootstrap
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+        - name: kuboard
+          image: eipwork/kuboard:v3.4.0
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: kuboard-v3-config
+            - secretRef:
+                name: kuboard-agent-secret
+          ports:
+            - name: web
+              containerPort: 80
+              protocol: TCP
+            - name: https
+              containerPort: 443
+              protocol: TCP
+            - name: agent-tcp
+              containerPort: 10081
+              protocol: TCP
+            - name: agent-udp
+              containerPort: 10081
+              protocol: UDP
+          livenessProbe:
+            httpGet:
+              path: /
+              port: web
+              scheme: HTTP
+            initialDelaySeconds: 45
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /
+              port: web
+              scheme: HTTP
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 250m
+              memory: 384Mi
+            limits:
+              cpu: 1000m
+              memory: 1Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: kuboard-data
+              mountPath: /data
+              readOnly: false
+      volumes:
+        - name: kuboard-data
+          emptyDir:
+            sizeLimit: 10Gi
+
+---
+# 6) 说明与下一步建议
+# - 在应用上面的文件前，请先在测试环境中：
+#   1) 修改 kuboard-agent-secret.stringData.KUBOARD_AGENT_KEY 为强随机密钥或使用 kubectl create secret ... 命令生成。
+#   2) 验证容器镜像是否能以非 root 用户运行；若不能，需要修改镜像或保留运行时为 root（但请评估风险）。
+#   3) 如果希望保留 NodePort 作为测试选项，可保留原 Service 并新增注释；生产环境推荐 ClusterIP + Ingress。
+# - 如果你希望，我可以把原有 kuboard-v3.yaml 中的 ClusterRoleBinding 替换为这个有限权限绑定（需要确认是否替换原有资源名）。
