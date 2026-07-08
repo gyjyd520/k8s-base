@@ -1,3 +1,14 @@
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: db-example-secret
+  namespace: example
+type: Opaque
+stringData:
+  MYSQL_ROOT_PASSWORD: "soqjdke4#es"
+  DB_EXAMPLE_PASSWORD: "1qaz2wsx"
+  DB_EXAMPLE_USERNAME: "eip_user"
 
 ---
 apiVersion: apps/v1
@@ -24,18 +35,14 @@ spec:
         k8s.eip.work/layer: cloud
         k8s.eip.work/name: cloud-eureka
     spec:
-      imagePullSecrets:
-        - {}
-      initContainers: []
       containers:
         - image: 'eipsample/example-cloud-eureka:v1.0.0-alpha.1'
           imagePullPolicy: Always
           name: cloud-eureka
           volumeMounts: []
-          resources: {}
           env:
             - name: CLOUD_EUREKA_DEFAULT_ZONE
-              value: 'http://cloud-eureka-0:9200/eureka'
+              value: 'http://cloud-eureka-0.cloud-eureka:9200/eureka'
       volumes: []
   replicas: 1
   volumeClaimTemplates: []
@@ -54,16 +61,15 @@ metadata:
     k8s.eip.work/layer: cloud
     k8s.eip.work/name: cloud-eureka
 spec:
+  clusterIP: None
   selector:
     k8s.eip.work/layer: cloud
     k8s.eip.work/name: cloud-eureka
-  type: ClusterIP
   ports:
     - port: 9200
       targetPort: 9200
       protocol: TCP
-      name: mtfsyi
-      nodePort: 0
+      name: eureka
 
 ---
 apiVersion: networking.k8s.io/v1
@@ -104,8 +110,8 @@ spec:
     requests:
       storage: 10Gi
   storageClassName: nfs-csi
----
 
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -130,7 +136,6 @@ spec:
         k8s.eip.work/layer: db
         k8s.eip.work/name: db-example
     spec:
-      initContainers: []
       containers:
         - image: 'eipsample/example-db-example:v1.0.0-alpha.1'
           imagePullPolicy: Always
@@ -139,10 +144,12 @@ spec:
             - name: db-example-storage
               mountPath: /var/lib/mysql
               subPath: mysql
-          resources: {}
           env:
             - name: MYSQL_ROOT_PASSWORD
-              value: 'soqjdke4#es'
+              valueFrom:
+                secretKeyRef:
+                  name: db-example-secret
+                  key: MYSQL_ROOT_PASSWORD
       volumes:
         - name: db-example-storage
           persistentVolumeClaim:
@@ -170,8 +177,7 @@ spec:
     - port: 3306
       targetPort: 3306
       protocol: TCP
-      name: fp6ksw
-      nodePort: 0
+      name: mysql
 
 ---
 apiVersion: apps/v1
@@ -198,15 +204,10 @@ spec:
         k8s.eip.work/layer: gateway
         k8s.eip.work/name: gateway-example
     spec:
-      imagePullSecrets:
-        - {}
-      initContainers: []
       containers:
         - image: 'eipsample/example-gateway-example:v1.0.0-alpha.1'
           imagePullPolicy: Always
           name: gateway-example
-          volumeMounts: []
-          resources: {}
           env:
             - name: CLOUD_EUREKA_DEFAULT_ZONE
               value: 'http://cloud-eureka:9200/eureka'
@@ -236,8 +237,7 @@ spec:
     - port: 9201
       targetPort: 9201
       protocol: TCP
-      name: pdmd3y
-      nodePort: 0
+      name: gateway
 
 ---
 apiVersion: apps/v1
@@ -264,15 +264,10 @@ spec:
         k8s.eip.work/layer: svc
         k8s.eip.work/name: svc-example
     spec:
-      imagePullSecrets:
-        - {}
-      initContainers: []
       containers:
         - image: 'eipsample/example-svc-example:v1.0.0-alpha.1'
           imagePullPolicy: Always
           name: svc-example
-          volumeMounts: []
-          resources: {}
           env:
             - name: CLOUD_EUREKA_DEFAULT_ZONE
               value: 'http://cloud-eureka:9200/eureka'
@@ -280,9 +275,15 @@ spec:
               value: >-
                 jdbc:mysql://db-example:3306/eip_db_example?characterEncoding=utf8&useSSL=false
             - name: DB_EXAMPLE_USERNAME
-              value: eip_user
+              valueFrom:
+                secretKeyRef:
+                  name: db-example-secret
+                  key: DB_EXAMPLE_USERNAME
             - name: DB_EXAMPLE_PASSWORD
-              value: 1qaz2wsx
+              valueFrom:
+                secretKeyRef:
+                  name: db-example-secret
+                  key: DB_EXAMPLE_PASSWORD
             - name: snowflake.dataCenterId
               value: '1'
             - name: csp.sentinel.dashboard.server
@@ -315,15 +316,10 @@ spec:
         k8s.eip.work/layer: web
         k8s.eip.work/name: web-example
     spec:
-      imagePullSecrets:
-        - {}
-      initContainers: []
       containers:
         - image: 'eipsample/example-web-example:v1.0.0-alpha.1'
           imagePullPolicy: Always
           name: web-example
-          volumeMounts: []
-          resources: {}
           env: []
       volumes: []
   replicas: 1
@@ -349,8 +345,7 @@ spec:
     - port: 80
       targetPort: 80
       protocol: TCP
-      name: mawfrp
-      nodePort: 0
+      name: http
 
 ---
 apiVersion: networking.k8s.io/v1
@@ -360,7 +355,7 @@ metadata:
   name: web-example
   annotations:
     k8s.eip.work/workload: web-example
-    k8s.eip.work/displayName: we-example
+    k8s.eip.work/displayName: web-example
   labels:
     k8s.eip.work/layer: web
     k8s.eip.work/name: web-example
