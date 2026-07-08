@@ -6,7 +6,7 @@ metadata:
 spec:
   ingressClassName: nginx
   rules:
-  - host: kuboard.magedu.com
+  - host: kuboard.gongyongjun.com
     http:
       paths:
       - path: /
