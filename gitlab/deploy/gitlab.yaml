@@ -3,20 +3,56 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: gitlab
+  labels:
+    app: gitlab
 spec:
   replicas: 1
   selector:
     matchLabels:
-      name: gitlab
+      app: gitlab
   template:
     metadata:
-      name: gitlab
       labels:
-        name: gitlab
+        app: gitlab
     spec:
+      # 优雅关闭时间
+      terminationGracePeriodSeconds: 30
+      
+      # 初始化容器：验证依赖服务就绪
+      initContainers:
+      - name: wait-for-postgres
+        image: postgres:15-alpine
+        command:
+          - sh
+          - -c
+          - |
+            until pg_isready -h postgresql -p 5432; do
+              echo 'Waiting for PostgreSQL...'
+              sleep 2
+            done
+        env:
+        - name: PGPASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: gitlab
+              key: db_pass
+      
+      - name: wait-for-redis
+        image: redis:7-alpine
+        command:
+          - sh
+          - -c
+          - |
+            until redis-cli -h redis -p 6379 ping; do
+              echo 'Waiting for Redis...'
+              sleep 2
+            done
+
       containers:
       - name: gitlab
         image: sameersbn/gitlab:17.3.1
+        imagePullPolicy: IfNotPresent
+        
         env:
         # 容器时区设置（用于日志等），推荐使用区域名，例如 Asia/Shanghai
         - name: TZ
@@ -61,7 +97,7 @@ spec:
 
         # GitLab 服务地址与端口（请根据实际部署调整为公网域名或内部服务名）
         - name: GITLAB_HOST
-          value: git.default.svc.cluster.local
+          value: gitlab.gongyongjun.com
         - name: GITLAB_PORT
           value: "80"
         - name: GITLAB_SSH_PORT
@@ -153,54 +189,102 @@ spec:
           value: "true"
         - name: IMAP_STARTTLS
           value: "false"
+
         ports:
         - name: http
           containerPort: 80
         - name: ssh
           containerPort: 22
+
+        # 资源限制（根据实际环境调整）
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "500m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+
+        # 改进的健康检查
+        livenessProbe:
+          httpGet:
+            path: /help
+            port: 80
+          initialDelaySeconds: 300
+          periodSeconds: 30
+          timeoutSeconds: 5
+          failureThreshold: 3
+
+        readinessProbe:
+          httpGet:
+            path: /help
+            port: 80
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+
         volumeMounts:
         - mountPath: /home/git/data
           name: data
-        livenessProbe:
-          httpGet:
-            path: /
-            port: 80
-          initialDelaySeconds: 180
-          timeoutSeconds: 5
-        readinessProbe:
-          httpGet:
-            path: /
-            port: 80
-          initialDelaySeconds: 5
-          timeoutSeconds: 1
+
+        # 安全上下文
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+              - ALL
+
       volumes:
       - name: data
         emptyDir: {}
+
 ---
 apiVersion: v1
 kind: Service
 metadata:
   name: gitlab
   labels:
-    name: gitlab
+    app: gitlab
 spec:
-  type: LoadBalancer
+  type: ClusterIP
   ports:
     - name: http
       port: 80
       targetPort: http
+      protocol: TCP
+  selector:
+    app: gitlab
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gitlab-ssh
+  labels:
+    app: gitlab
+spec:
+  type: NodePort
+  ports:
     - name: ssh
       port: 22
       targetPort: ssh
+      protocol: TCP
+      nodePort: 30022
   selector:
-    name: gitlab
+    app: gitlab
+
 ---
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: gitlab
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "0"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
 spec:
-  ingressClassName: 'nginx'
+  ingressClassName: nginx
   rules:
   - host: gitlab.gongyongjun.com
     http:
