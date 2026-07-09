@@ -1,5 +1,10 @@
 ---
 apiVersion: apps/v1
+kind: Namespace
+metadata:
+  name: gitlab
+---
+apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: gitlab
