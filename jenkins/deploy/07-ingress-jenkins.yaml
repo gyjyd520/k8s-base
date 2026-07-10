@@ -6,7 +6,7 @@ metadata:
 spec:
   ingressClassName: nginx
   rules:
-  - host: cicd.magedu.com
+  - host: cicd.gongyongjun.com
     http:
       paths:
       - backend:
@@ -16,7 +16,7 @@ spec:
               number: 8080 
         path: /
         pathType: Prefix
-  - host: jenkins.magedu.com
+  - host: jenkins.gongyongjun.com
     http:
       paths:
       - backend:
